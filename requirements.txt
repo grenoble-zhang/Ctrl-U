@@ -1,0 +1,12 @@
+diffusers
+datasets
+transformers
+tensorboard
+wandb
+huggingface_hub
+ftfy
+kornia==0.7.0
+accelerate
+openmim
+torchmetrics
+torch-fidelity
