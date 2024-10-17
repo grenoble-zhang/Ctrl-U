@@ -34,17 +34,3 @@ Our work is based on the following open-source projects. We sincerely thank the 
 * [ControlNet++](https://github.com/liming-ai/ControlNet_Plus_Plus)
 * [MMSegmentation](https://github.com/open-mmlab/mmsegmentation)
 * [ImageReward](https://github.com/THUDM/ImageReward)
-
-## Citation
-If you find Ctrl-U is useful in your research or applications, please consider giving us a star ⭐ or cite us using:
-```bibtex
-@article{li2024controlar,
-      title={ControlAR: Controllable Image Generation with Autoregressive Models}, 
-      author={Zongming Li, Tianheng Cheng, Shoufa Chen, Peize Sun, Haocheng Shen, Longjin Ran, Xiaoxin Chen, Wenyu Liu, Xinggang Wang},
-      year={2024},
-      eprint={2410.02705},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2410.02705}, 
-}
-```
