@@ -34,3 +34,14 @@ Our work is based on the following open-source projects. We sincerely thank the 
 * [ControlNet++](https://github.com/liming-ai/ControlNet_Plus_Plus)
 * [MMSegmentation](https://github.com/open-mmlab/mmsegmentation)
 * [ImageReward](https://github.com/THUDM/ImageReward)
+
+<!-- ## Citation
+If you find Ctrl-U is useful in your research or applications, please consider giving us a star ⭐ or cite us using:
+```bibtex
+@article{zhang2024ctrl,
+  title={Ctrl-U: Robust Conditional Image Generation via Uncertainty-aware Reward Modeling},
+  author={Zhang, Guiyu and Gao, Huan-ang and Jiang, Zijian and Zhao, Hao and Zheng, Zhedong},
+  journal={arXiv preprint arXiv:2410.11236},
+  year={2024}
+}
+``` -->
