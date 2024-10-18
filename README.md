@@ -35,7 +35,7 @@ Our work is based on the following open-source projects. We sincerely thank the 
 * [MMSegmentation](https://github.com/open-mmlab/mmsegmentation)
 * [ImageReward](https://github.com/THUDM/ImageReward)
 
-<!-- ## Citation
+## Citation
 If you find Ctrl-U is useful in your research or applications, please consider giving us a star ⭐ or cite us using:
 ```bibtex
 @article{zhang2024ctrl,
@@ -44,4 +44,4 @@ If you find Ctrl-U is useful in your research or applications, please consider g
   journal={arXiv preprint arXiv:2410.11236},
   year={2024}
 }
-``` -->
+```
