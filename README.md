@@ -8,7 +8,7 @@
 [![arXiv](https://img.shields.io/badge/arXiv-2410.11236-b31b1b.svg)](https://arxiv.org/abs/2410.11236)&nbsp;
 </div>
 
-Authors: [Guiyu Zhang](https://scholar.google.com/citations?user=NLPMoeAAAAAJ/)<sup>1</sup>, [Huan-ang Gao](https://c7w.tech/about/)<sup>2</sup>, Zijian Jiang<sup>2</sup>, [Hao Zhao](https://sites.google.com/view/fromandto)<sup>2</sup>, [Zhedong Zheng](https://www.zdzheng.xyz/)<sup>1</sup>
+Authors: [Guiyu Zhang\*](https://scholar.google.com/citations?user=NLPMoeAAAAAJ/)<sup>1</sup>, [Huan-ang Gao\*](https://c7w.tech/about/)<sup>2</sup>, Zijian Jiang<sup>2</sup>, [Hao Zhao](https://sites.google.com/view/fromandto)<sup>2</sup>, [Zhedong Zheng†](https://www.zdzheng.xyz/)<sup>1</sup>
 
 <sup>1</sup> FST, University of Macau&emsp;<sup>2</sup> AIR, Tsinghua University
 
