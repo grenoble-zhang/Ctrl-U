@@ -14,6 +14,7 @@ Authors: [Guiyu Zhang\*](https://scholar.google.com/citations?user=NLPMoeAAAAAJ/
 
 ## News
 `[2025-1-22]:` Our Ctrl-U has been accepted by ICLR 2025 🚀 !
+
 `[2024-10-14]:` We have released the [technical report of Ctrl-U](https://arxiv.org/abs/2410.11236). Code, models, and demos are coming soon!
 
 ## Overview
