@@ -9,13 +9,11 @@ from functools import partial
 from torch import Tensor
 from torchvision import transforms
 
-from canny_tools import Canny  # canny edge detection
 from mmengine.hub import get_model  # segmentation
 from transformers import DPTForDepthEstimation  # depth estimation
 
 from mmseg.models.losses.silog_loss import silog_loss
 from torchvision.transforms import RandomCrop
-import pdb
 
 def get_reward_model(task='segmentation', model_path='mmseg::upernet/upernet_r50_4xb4-160k_ade20k-512x512.py'):
     """Return reward model for different tasks.
@@ -26,10 +24,7 @@ def get_reward_model(task='segmentation', model_path='mmseg::upernet/upernet_r50
 
     """
     if task == 'segmentation':
-        print('guiyu')
         return get_model(model_path, pretrained=True)
-    elif task == 'canny':
-        return Canny()
     elif task == 'depth':
         return DPTForDepthEstimation.from_pretrained(model_path)
     elif task == 'lineart':
@@ -39,7 +34,7 @@ def get_reward_model(task='segmentation', model_path='mmseg::upernet/upernet_r50
     elif task == 'hed':
         return HEDdetector(model_path)
     else:
-        raise not NotImplementedError("Only support segmentation, canny and depth for now.")
+        raise not NotImplementedError("Only support segmentation and depth for now.")
 
 
 def get_reward_loss(predictions, labels, task='segmentation', **args):
@@ -54,23 +49,14 @@ def get_reward_loss(predictions, labels, task='segmentation', **args):
     if task == 'segmentation':
         # import IPython; IPython.embed()
         return nn.functional.cross_entropy(predictions, labels, ignore_index=255, **args)
-    elif task == 'canny':
-        loss = nn.functional.mse_loss(predictions, labels, **args).mean(1)
-        # losss = nn.functional.mse_loss(predictions, labels, **args).mean(2)
-        # pdb.set_trace()
-        return loss
-        # loss = nn.functional.mse_loss(predictions, labels, **args).mean(2)
-        # return loss.mean((-1,-2))
     elif task in ['lineart', 'hed']:
         loss = nn.functional.mse_loss(predictions, labels, **args).mean(1)
-        # pdb.set_trace()
         return loss
     elif task == 'depth':
         loss = nn.functional.mse_loss(predictions, labels, **args)
-        # pdb.set_trace()
         return loss
     else:
-        raise not NotImplementedError("Only support segmentation, canny and depth for now.")
+        raise not NotImplementedError("Only support segmentation and depth for now.")
 
 
 def image_grid(imgs, rows, cols):
@@ -173,7 +159,7 @@ def label_transform(labels, task, dataset_name, **args):
         return seg_label_transform(labels, dataset_name, **args)
     elif task == 'depth':
         return depth_label_transform(labels, dataset_name, **args)
-    elif task in ['canny', 'lineart', 'hed']:
+    elif task in ['lineart', 'hed']:
         return edge_label_transform(labels, dataset_name, **args)
     else:
         raise NotImplementedError("Only support segmentation and edge detection for now.")

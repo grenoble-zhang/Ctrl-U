@@ -9,7 +9,6 @@ from functools import partial
 from torch import Tensor
 from torchvision import transforms
 
-from canny_tools import Canny  # canny edge detection
 from mmengine.hub import get_model  # segmentation
 from transformers import DPTForDepthEstimation  # depth estimation
 

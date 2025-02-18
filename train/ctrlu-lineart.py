@@ -21,7 +21,6 @@ import random
 import logging
 import copy
 import argparse
-
 import torch
 import numpy as np
 import accelerate
@@ -39,9 +38,8 @@ from transformers import AutoTokenizer, PretrainedConfig
 from datetime import datetime
 
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-import rectified_flow
-import pdb
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from PIL import Image
 from pathlib import Path
@@ -54,6 +52,7 @@ from torchvision.transforms.functional import normalize
 
 try:
     from torchvision.transforms import InterpolationMode
+
     BICUBIC = InterpolationMode.BICUBIC
 except ImportError:
     BICUBIC = Image.Resampling.BICUBIC
@@ -72,10 +71,17 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-from utils import image_grid, get_reward_model, get_reward_loss, label_transform, group_random_crop
+from utils import (
+    image_grid,
+    get_reward_model,
+    get_reward_loss,
+    label_transform,
+    group_random_crop,
+)
 
 
 from PIL import PngImagePlugin
+
 MaximumDecompressedsize = 1024
 MegaByte = 2**20
 PngImagePlugin.MAX_TEXT_CHUNK = MaximumDecompressedsize * MegaByte
@@ -91,30 +97,38 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__)
 
 # Offloading state_dict to CPU to avoid GPU memory boom (only used for FSDP training)
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    StateDictType,
+    FullStateDictConfig,
+)
 full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
 
 
 def log_validation(
-        vae,
-        text_encoder,
-        tokenizer,
-        unet,
-        controlnet,
-        ema_controlnet,
-        args,
-        accelerator,
-        weight_dtype,
-        step,
-        val_dataset):
+    vae,
+    text_encoder,
+    tokenizer,
+    unet,
+    controlnet,
+    ema_controlnet,
+    args,
+    accelerator,
+    weight_dtype,
+    step,
+    val_dataset,
+):
 
     # randomly select some samples to log
     if val_dataset is not None:
+        # val_dataset = val_dataset.select(
+        #     random.sample(range(len(val_dataset)), args.max_val_samples)
+        # )
         val_dataset = val_dataset.select(
-            random.sample(range(len(val_dataset)), args.max_val_samples)
+            [0,1,2,3,4,5]
         )
 
-    if args.task_name in ['lineart', 'hed']:
+    if args.task_name in ["lineart", "hed"]:
         reward_model = get_reward_model(args.task_name, args.reward_model_name_or_path)
         reward_model.to(accelerator.device)
         reward_model.eval()
@@ -134,10 +148,9 @@ def log_validation(
         revision=args.revision,
         torch_dtype=weight_dtype,
     )
-    if args.rflow:
-        pipeline.scheduler = rectified_flow.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-    else:
-        pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+    pipeline.scheduler = UniPCMultistepScheduler.from_config(
+        pipeline.scheduler.config
+        )
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -152,7 +165,7 @@ def log_validation(
     image_column = args.image_column
     caption_column = args.caption_column
 
-    if args.conditioning_image_column in ['canny', 'lineart', 'hed']:
+    if args.conditioning_image_column in ['lineart', 'hed']:
         conditioning_image_column = image_column
     else:
         conditioning_image_column = args.conditioning_image_column
@@ -170,16 +183,7 @@ def log_validation(
     # Avoid some problems caused by grayscale images
     validation_conditions = [x.convert('RGB') for x in validation_conditions]
 
-    if args.conditioning_image_column == "canny":
-        low_threshold = 0.1 # low_threshold = random.uniform(0, 1)
-        high_threshold = 0.2 # high_threshold = random.uniform(low_threshold, 1)
-        with autocast():
-            validation_conditions = [torchvision.transforms.functional.pil_to_tensor(x) for x in validation_conditions]
-            validation_conditions = [x / 255. for x in validation_conditions]
-            validation_conditions = kornia.filters.canny(torch.stack(validation_conditions), low_threshold, high_threshold)[1]
-            validation_conditions = torch.chunk(validation_conditions, len(validation_conditions), dim=0)
-            validation_conditions = [torchvision.transforms.functional.to_pil_image(x.squeeze(0), 'L') for x in validation_conditions]
-    elif args.conditioning_image_column in ['lineart', 'hed']:
+    if args.conditioning_image_column in ['lineart', 'hed']:
         with autocast():
             validation_conditions = [torchvision.transforms.functional.pil_to_tensor(x) for x in validation_conditions]
             validation_conditions = [x / 255. for x in validation_conditions]
@@ -215,46 +219,6 @@ def log_validation(
             "images": images,
             'ema_images': []
         })
-
-    # if args.use_ema:
-    #     # Store the ControlNet parameters temporarily and load the EMA parameters to perform inference.
-    #     ema_controlnet.copy_to(controlnet.parameters())
-
-    #     pipeline = StableDiffusionControlNetPipeline.from_pretrained(
-    #         args.pretrained_model_name_or_path,
-    #         vae=vae,
-    #         text_encoder=text_encoder,
-    #         tokenizer=tokenizer,
-    #         unet=unet,
-    #         controlnet=controlnet,
-    #         safety_checker=None,
-    #         revision=args.revision,
-    #         torch_dtype=weight_dtype,
-    #     )
-    #     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
-    #     pipeline = pipeline.to(accelerator.device)
-    #     pipeline.set_progress_bar_config(disable=True)
-
-    #     if args.enable_xformers_memory_efficient_attention:
-    #         pipeline.enable_xformers_memory_efficient_attention()
-
-    #     logger.info(f"Running validation with {len(validation_prompts)} prompts... ")
-    #     for idx, (validation_prompt, validation_condition, validation_image) in enumerate(zip(validation_prompts, validation_conditions, validation_images)):
-    #         if val_dataset is not None:
-    #             validation_condition = validation_condition.convert('RGB').resize((512, 512), Image.Resampling.BICUBIC)
-    #         else:
-    #             validation_condition = Image.open(validation_condition).convert("RGB").resize((512, 512), Image.Resampling.BICUBIC)
-
-    #         with torch.autocast("cuda"):
-    #             images = pipeline(
-    #                 [validation_prompt] * args.num_validation_images,
-    #                 [validation_condition] * args.num_validation_images,
-    #                 num_inference_steps=20,
-    #                 generator=generator
-    #             ).images
-
-    #         image_logs[idx]['ema_images'] = images
-
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
@@ -341,7 +305,9 @@ def save_model_card(repo_id: str, image_logs=None, base_model=str, repo_folder=N
             validation_image.save(os.path.join(repo_folder, "image_control.png"))
             img_str += f"prompt: {validation_prompt}\n"
             images = [validation_image] + images
-            image_grid(images, 1, len(images)).save(os.path.join(repo_folder, f"images_{i}.png"))
+            image_grid(images, 1, len(images)).save(
+                os.path.join(repo_folder, f"images_{i}.png")
+            )
             img_str += f"![images_{i})](./images_{i}.png)\n"
 
     yaml = f"""
@@ -375,6 +341,12 @@ def parse_args(input_args=None):
         default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--pretrained_unet_path",
+        type=str,
+        default=None,
+        help="Path to pretrained unet path.",
     )
     parser.add_argument(
         "--controlnet_model_name_or_path",
@@ -431,29 +403,9 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--guidance_scale",
-        type=float,
-        default=1.0,
-    )
-    parser.add_argument(
-        "--controlnet_conditioning_scale",
-        type=float,
-        default=1.0,
-    )
-    parser.add_argument(
-        "--control_guidance_start",
-        type=float,
-        default=0.0,
-    )
-    parser.add_argument(
-        "--control_guidance_end",
-        type=float,
-        default=1.0,
-    )
-    parser.add_argument(
         "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=1)
+    parser.add_argument("--num_train_epochs", type=int, default=1000000)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -530,9 +482,6 @@ def parse_args(input_args=None):
     )
     parser.add_argument("--lr_power", type=float, default=1.0, help="Power factor of the polynomial scheduler.")
     parser.add_argument(
-        "--use_8bit_adam", action="store_true", help="Whether or not to use 8-bit Adam from bitsandbytes."
-    )
-    parser.add_argument(
         "--dataloader_num_workers",
         type=int,
         default=16,
@@ -580,7 +529,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--max_timestep_rewarding",
         type=int,
-        default=200,
+        default=400,
     )
     parser.add_argument(
         "--allow_tf32",
@@ -762,7 +711,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--validation_steps",
         type=int,
-        default=5,
+        default=100,
         help=(
             "Run validation every X steps. Validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`"
@@ -778,32 +727,6 @@ def parse_args(input_args=None):
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
-    
-    ## Rectified flow
-    parser.add_argument(
-        "--rflow", action="store_true"
-    )
-    ## Uncertainty
-    parser.add_argument(
-        "--uncertainty", action="store_true"
-    )
-    parser.add_argument(
-        "--add_timestep",
-        type=int,
-        default=1,
-        help=(
-            "Add a number to timestep"
-        )
-    )
-    parser.add_argument(
-        "--uncertainty_scale",
-        type=float,
-        default=0.1,
-        help=(
-            "Add a number to timestep"
-        ),
-    )
-    
     parser.add_argument(
         "--weighting_scheme",
         type=str,
@@ -811,20 +734,18 @@ def parse_args(input_args=None):
         choices=["sigma_sqrt", "logit_normal", "mode", "cosmap"],
     )
     parser.add_argument(
-        "--logit_mean", type=float, default=0.0, help="mean to use when using the `'logit_normal'` weighting scheme."
+        "--add_timestep", type=int, default=1, help=("Add a number to timestep")
     )
-    parser.add_argument("--logit_std", type=float, default=1.0, help="std to use when using the `'logit_normal'` weighting scheme.")
     parser.add_argument(
-        "--mode_scale",
+        "--u_scale",
         type=float,
-        default=1.29,
-        help="Scale of mode weighting scheme. Only effective when using the `'mode'` as the `weighting_scheme`.",
+        default=0.1,
     )
+    
     parser.add_argument(
-        "--tune_sd", action="store_true"
+        "--linear_reward_scale_steps", default=5000, type=int, help="Number of steps to linearly increase the reward weight."
     )
     parser.add_argument("--exp_name", type=str, default="debug")
-    
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -876,6 +797,7 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
+    streaming = False
     if args.dataset_name is not None:
         # dataset = load_dataset(
         #     args.dataset_name,
@@ -898,9 +820,14 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
             # )
             # dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/*.parquet')
             if "Captioned_ADE20K" in args.dataset_name:
-                dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/train-*.parquet')
+                dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/train-*.parquet', num_proc=64)
+            elif "COCO" in args.dataset_name:
+                dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/train-*.parquet', num_proc=64)
+                # dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/train-00241-of-00248.parquet', num_proc=64)
             else:
-                dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/*.parquet')
+                dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/*.parquet', streaming=True)
+                streaming = True
+
     else:
         if args.train_data_dir is not None:
             dataset = load_dataset(
@@ -923,31 +850,22 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
     # We need to tokenize inputs and targets.
     column_names = dataset[split].column_names
 
-    # 6. Get the column names for input/target.
     if args.image_column is None:
         image_column = column_names[0]
         logger.info(f"image column defaulting to {image_column}")
     else:
         image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
 
     if args.caption_column is None:
         caption_column = column_names[1]
         logger.info(f"caption column defaulting to {caption_column}")
     else:
         caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
 
     if args.conditioning_image_column is None:
         conditioning_image_column = column_names[2]
         logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
-    elif args.conditioning_image_column in ['canny', 'lineart', 'hed']:
+    elif args.conditioning_image_column in ['lineart', 'hed']:
         conditioning_image_column = image_column
         logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
     else:
@@ -956,6 +874,16 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
             raise ValueError(
                 f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
             )
+
+    def tokenize_captions_single(examples, is_train=True):
+        captions = []
+        caption = examples[caption_column]
+        captions.append(caption)
+        
+        inputs = tokenizer(
+            captions, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+        )
+        return inputs.input_ids.squeeze(0)
 
     def tokenize_captions(examples, is_train=True):
         captions = []
@@ -992,6 +920,7 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
         ]
     )
 
+
     label_image_transforms = transforms.Compose(
         [
             transforms.Resize(resolution, interpolation=transforms.InterpolationMode.NEAREST, antialias=True),
@@ -999,11 +928,55 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
         ]
     )
 
+    def preprocess_train_single(examples):
+        pil_image = examples[image_column].convert("RGB")
+        image = image_transforms(pil_image)
+        
+        if args.conditioning_image_column in ['lineart', 'hed']:
+            conditioning_image = image
+        else:
+            conditioning_image = examples[conditioning_image_column].convert("RGB")
+            conditioning_image = conditioning_image_transforms(conditioning_image)
+        
+        if args.label_column is not None:
+            dtype = torch.long
+            label = torch.tensor(np.asarray(examples[args.label_column]), dtype=dtype).unsqueeze(0)
+            label = label_image_transforms(label)
+        
+        # perform random crop for image/conditioning_image/label
+        if args.label_column is not None:
+            grouped_data = torch.cat([image, conditioning_image, label])
+            grouped_data = group_random_crop(grouped_data, args.resolution)
+            image = grouped_data[:3, :, :]
+            conditioning_image = grouped_data[3:6, :, :]
+            label = grouped_data[6:, :, :]
+            examples[args.label_column] = label.squeeze(0)
+        else:
+            grouped_data = torch.cat([image, conditioning_image])
+            grouped_data = group_random_crop(grouped_data, args.resolution)
+            image = grouped_data[:3, :, :]
+            conditioning_image = grouped_data[3:, :, :]
+            
+        rand_num = random.random()
+        if rand_num < args.image_condition_dropout:
+            conditioning_image = torch.zeros_like(conditioning_image)
+        elif rand_num < args.image_condition_dropout + args.text_condition_dropout:
+            examples[caption_column] = ""
+        elif rand_num < args.image_condition_dropout + args.text_condition_dropout + args.all_condition_dropout:
+            conditioning_image = torch.zeros_like(conditioning_image)
+            examples[caption_column] = ""
+        
+        examples["pixel_values"] = image
+        examples["conditioning_pixel_values"] = conditioning_image
+        examples["input_ids"] = tokenize_captions_single(examples)
+
+        return examples
+    
     def preprocess_train(examples):
         pil_images = [image.convert("RGB") for image in examples[image_column]]
         images = [image_transforms(image) for image in pil_images]
 
-        if args.conditioning_image_column in ['canny', 'lineart', 'hed']:
+        if args.conditioning_image_column in ['lineart', 'hed']:
             conditioning_images = images
         else:
             conditioning_images = [image.convert("RGB") for image in examples[conditioning_image_column]]
@@ -1053,14 +1026,17 @@ def make_train_dataset(args, tokenizer, accelerator, split='train'):
         return examples
 
     with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed)
-            # rewrite the shuffled dataset on disk as contiguous chunks of data
-            dataset["train"] = dataset["train"].flatten_indices()
-            dataset["train"] = dataset["train"].select(range(args.max_train_samples))
-
+        # if args.max_train_samples is not None:
+        #     dataset["train"] = dataset["train"].shuffle(seed=args.seed)
+        #     # rewrite the shuffled dataset on disk as contiguous chunks of data
+        #     dataset["train"] = dataset["train"].flatten_indices()
+        #     dataset["train"] = dataset["train"].select(range(args.max_train_samples))
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        if streaming:
+            train_dataset = dataset["train"].map(preprocess_train, batched=True, batch_size=1)
+            train_dataset = train_dataset.shuffle(seed=args.seed, buffer_size=args.train_batch_size * 8)
+        else:
+            train_dataset = dataset["train"].with_transform(preprocess_train)
 
     return dataset, train_dataset
 
@@ -1087,15 +1063,10 @@ def collate_fn(examples):
         "labels": labels,
     }
 
-
-def uncertainty_train():
-    return 0
-
-
 def main(args):
     current_time = args.exp_name + "_" + datetime.now().strftime("%b%d_%H-%M-%S")
     args.output_dir = os.path.join(args.output_dir, current_time)
-    
+
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
@@ -1124,6 +1095,7 @@ def main(args):
         level=logging.INFO,
     )
     logger.info(accelerator.state, main_process_only=False)
+    logger.info(args.dataset_name)
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -1159,14 +1131,8 @@ def main(args):
     # import correct text encoder class
     text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
 
-    # Load scheduler and models
-    # noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    if args.rflow:
-        noise_scheduler = rectified_flow.FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0)
-        noise_scheduler_copy = copy.deepcopy(noise_scheduler)
-    else:
-        noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    
+    noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
+
     text_encoder = text_encoder_cls.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
     )
@@ -1175,6 +1141,11 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
 
+    if args.pretrained_unet_path:
+        logger.info("Loading pretrained unet")
+        unet = UNet2DConditionModel.from_pretrained(args.pretrained_unet_path)
+
+    print(args.reward_model_name_or_path)
     reward_model = get_reward_model(args.task_name, args.reward_model_name_or_path)
 
     if args.controlnet_model_name_or_path:
@@ -1185,65 +1156,51 @@ def main(args):
         controlnet = ControlNetModel.from_unet(unet)
 
     # `accelerate` 0.16.0 will have better support for customized saving
-
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         def save_model_hook(models, weights, output_dir):
-            # pdb.set_trace()
-            # import IPython; IPython.embed()
-            i = len(weights) - 1
-            # todo: check save model hook
-            while len(weights) > 0:
-                weights.pop()
+            
+            save_names = [str(x.__class__.__name__) for x in models]
+
+            for i in range(len(save_names)):
+                save_name = save_names[i]
                 model = models[i]
+                model.save_pretrained(os.path.join(output_dir, save_name))
 
-                sub_dir = "controlnet"
-                model.save_pretrained(os.path.join(output_dir, sub_dir))
-
-                i -= 1
 
         def load_model_hook(models, input_dir):
-            # pdb.set_trace()
+            load_names = [str(x.__class__.__name__) for x in models]
             while len(models) > 0:
                 # pop models so that they are not loaded again
                 model = models.pop()
-
-                # load diffusers style into model
-                load_model = ControlNetModel.from_pretrained(input_dir, subfolder="controlnet")
+                if type(model) == ControlNetModel:
+                    load_name = "ControlNetModel"
+                    load_model = ControlNetModel.from_pretrained(input_dir, subfolder=load_name)
+                elif type(model) == UNet2DConditionModel:
+                    load_name = "UNet2DConditionModel"
+                    load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder=load_name)
+                logger.info(f"[CKPT] Loading {load_name} from {input_dir}")
                 model.register_to_config(**load_model.config)
-
                 model.load_state_dict(load_model.state_dict())
+                # ['UNet2DConditionModel', 'ControlNetModel']
                 del load_model
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
 
     vae.requires_grad_(False)
-    unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
     reward_model.requires_grad_(False)
+    unet.requires_grad_(False)
+    
+    controlnet.requires_grad_(True)
     controlnet.train()
 
-    # Create EMA for the ControlNet.
     if args.use_ema:
-        ema_controlnet = ControlNetModel.from_pretrained(args.controlnet_model_name_or_path)
+        ema_controlnet = copy.deepcopy(controlnet)
         ema_controlnet = EMAModel(ema_controlnet.parameters(), model_cls=ControlNetModel, model_config=ema_controlnet.config)
     else:
         ema_controlnet = None
-
-    if args.enable_xformers_memory_efficient_attention:
-        if is_xformers_available():
-            import xformers
-
-            xformers_version = version.parse(xformers.__version__)
-            if xformers_version == version.parse("0.0.16"):
-                logger.warn(
-                    "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
-                )
-            unet.enable_xformers_memory_efficient_attention()
-            controlnet.enable_xformers_memory_efficient_attention()
-        else:
-            raise ValueError("xformers is not available. Make sure it is installed correctly")
 
     if args.gradient_checkpointing:
         controlnet.enable_gradient_checkpointing()
@@ -1269,29 +1226,12 @@ def main(args):
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
-    # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-            )
-
-        optimizer_class = bnb.optim.AdamW8bit
-    else:
-        optimizer_class = torch.optim.AdamW
+    optimizer_class = torch.optim.AdamW
 
     if args.use_ema:
         ema_controlnet.to(accelerator.device)
 
-    # Optimizer creation
-    # optimized_parameters = list(controlnet.parameters()) + list(reward_model.parameters()) + list(unet.parameters())
-    if args.tune_sd:
-        trainable_parameters = list(controlnet.parameters()) + list(unet.parameters())
-    else:
-        trainable_parameters = list(controlnet.parameters()) 
-
+    trainable_parameters = list(controlnet.parameters())
     optimizer = optimizer_class(
         trainable_parameters,
         lr=args.learning_rate,
@@ -1301,34 +1241,35 @@ def main(args):
     )
 
     dataset, train_dataset = make_train_dataset(args, tokenizer, accelerator)
-    
-    if 'Captioned_ADE20K' in args.dataset_name:
-        val_dataset_train = load_dataset('parquet', data_files=f'{args.dataset_name}/validation*.parquet')['train']
-        import pdb
-        pdb.set_trace()
+    if 'Captioned_ADE20K' in args.dataset_name or 'COCO' in args.dataset_name:
+        val_dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/validation*.parquet')['train']
     else:
         if args.validation_prompt is None and args.validation_image is None:
             if 'validation' in dataset.keys():
                 val_dataset = dataset['validation']
+                print("Found validation dataset")
             else:
-                dataset = train_dataset.train_test_split(test_size=0.00005)
-                train_dataset, val_dataset = dataset['train'], dataset['test']
+                if 'COCO' in args.dataset_name or 'ADE' in args.dataset_name:                
+                    dataset = train_dataset.train_test_split(test_size=0.00005)
+                    train_dataset, val_dataset = dataset['train'], dataset['test']
+                    print("Splitting training dataset into train and validation")
+                else:
+                    # Advance statement: We use the first subset of the training set for validation 
+                    # only to shorten the validation time during training. You can also use the validation set.
+                    val_dataset = load_dataset('parquet', data_files=f'{args.dataset_name}/train-00000-*.parquet')['train']
+                    print("Using the first split as validation dataset")
+                
         else:
             val_dataset = None
+
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        shuffle=True,
+        shuffle=True if 'COCO' in args.dataset_name or 'ADE' in args.dataset_name else None,
         collate_fn=collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
+        drop_last=True,
     )
-
-    # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
@@ -1342,8 +1283,8 @@ def main(args):
     # unet, reward_model = accelerator.prepare(unet, reward_model)
 
     # Prepare others after preparing the model
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
+    unet, controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, controlnet, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1356,17 +1297,10 @@ def main(args):
 
     # Move vae, unet and text_encoder to device and cast to weight_dtype
     vae.to(accelerator.device, dtype=weight_dtype)
-    unet.to(accelerator.device, dtype=weight_dtype)
+    # unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     reward_model.to(accelerator.device, dtype=weight_dtype)
     reward_model.eval()
-
-    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if overrode_max_train_steps:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # Afterwards we recalculate our number of training epochs
-    args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -1386,9 +1320,6 @@ def main(args):
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
@@ -1398,28 +1329,13 @@ def main(args):
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
-        if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
-        else:
-            # Get the most recent checkpoint
-            dirs = os.listdir(args.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+        path = args.resume_from_checkpoint
+        accelerator.print(f"Resuming from checkpoint {path}")
+        accelerator.load_state(os.path.join(args.resume_from_checkpoint))
+        global_step = int(path.split("-")[1])
 
-        if path is None:
-            accelerator.print(
-                f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
-            )
-            args.resume_from_checkpoint = None
-            initial_global_step = 0
-        else:
-            accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.resume_from_checkpoint))
-            global_step = int(path.split("-")[1])
-
-            initial_global_step = global_step
-            first_epoch = global_step // num_update_steps_per_epoch
+        initial_global_step = global_step * 0
+        first_epoch = 0
     else:
         initial_global_step = 0
 
@@ -1433,38 +1349,35 @@ def main(args):
 
     image_logs = None
     # Uncertainty function
-    uncertainty_sm = torch.nn.Softmax(dim = 1)
-    uncertainty_log_sm = torch.nn.LogSoftmax(dim = 1)
-    kl_distance = torch.nn.KLDivLoss( reduction = 'none')
+    uncertainty_sm = torch.nn.Softmax(dim=1)
+    uncertainty_log_sm = torch.nn.LogSoftmax(dim=1)
+    kl_distance = torch.nn.KLDivLoss(reduction="none")
+    
     for epoch in range(first_epoch, args.num_train_epochs):
         loss_per_epoch = 0.
         pretrain_loss_per_epoch = 0.
         reward_loss_per_epoch = 0.
-        reward_wo_loss_per_epoch = 0.
-        variance_per_epoch = 0.
-        exp_variance_per_epoch = 0.
-        
-        train_loss, train_pretrain_loss, train_reward_loss, train_reward_wo_loss = 0., 0., 0., 0
+
+        train_loss, train_pretrain_loss, train_reward_loss = (
+            0.,
+            0.,
+            0.
+        )
         train_variance, train_exp_variance = 0., 0.
+        
+        if 'Captioned_ADE20K' in args.dataset_name or 'COCO' in args.dataset_name:
+            pass
+        else:
+            train_dataloader.dataset.set_epoch(epoch)
+            
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(controlnet):
+            with accelerator.accumulate(unet, controlnet):
                 encoder_hidden_states = text_encoder(batch["input_ids"])[0]  # text condition
                 controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)  # image condition
 
                 # This step is necessary. It took us a long time to find out this issue
-                # The input of the canny/hed/lineart model does not require normalization of the image
-                if args.conditioning_image_column == "canny":
-                    low_threshold = 0.1 # low_threshold = random.uniform(0, 1)
-                    high_threshold = 0.2 # high_threshold = random.uniform(low_threshold, 1)
-                    with torch.no_grad():
-                        # mean & std used in image transformations
-                        mean = torch.tensor([0.5, 0.5, 0.5]).view(1, -1, 1, 1).to(accelerator.device)
-                        std = torch.tensor([0.5, 0.5, 0.5]).view(1, -1, 1, 1).to(accelerator.device)
-                        # magnitude, edge
-                        denormalized_condition_image = controlnet_image * std + mean
-                        labels, controlnet_image = reward_model(denormalized_condition_image, low_threshold, high_threshold)
-                        controlnet_image = controlnet_image.expand(-1, 3, -1, -1)  # (B, 3, H, W)
-                elif args.conditioning_image_column in ['lineart', 'hed']:
+                # The input of the hed/lineart model does not require normalization of the image
+                if args.conditioning_image_column in ['lineart', 'hed']:
                     with torch.no_grad():
                         # mean & std used in image transformations
                         mean = torch.tensor([0.5, 0.5, 0.5]).view(1, -1, 1, 1).to(accelerator.device)
@@ -1475,96 +1388,127 @@ def main(args):
                         controlnet_image = 1 - controlnet_image if args.task_name == 'lineart' else controlnet_image
 
                 """
-                Training ControlNet
+                Training Ctrl-u
                 """
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
 
+                bsz = latents.shape[0]
+                # Sample a random timestep for each image
+                timesteps = torch.randint(
+                    args.timestep_sampling_start,
+                    args.timestep_sampling_end,
+                    (bsz,),
+                    device=latents.device,
+                )
+                timesteps = timesteps.long()
+                noise = torch.randn_like(latents)
 
-                if args.rflow:
-                    noise = torch.randn_like(latents)
-                    bsz = latents.shape[0]
-                    
-                    # Sample a random timestep for each image
-                    # for weighting schemes where we sample timesteps non-uniformly
-                    u = rectified_flow.compute_density_for_timestep_sampling(
-                        weighting_scheme=args.weighting_scheme,
-                        batch_size=bsz,
-                        logit_mean=args.logit_mean,
-                        logit_std=args.logit_std,
-                        mode_scale=args.mode_scale,
+                timesteps_add = timesteps + args.add_timestep
+                timesteps = torch.cat((timesteps, timesteps_add), dim=0)
+                timesteps[timesteps > 999] = 999
+                
+                latents_cloned = latents.clone()
+                latents = torch.cat((latents, latents_cloned), dim=0)
+
+                encoder_hidden_states_cloned = encoder_hidden_states.clone()
+                encoder_hidden_states = torch.cat(
+                    (encoder_hidden_states, encoder_hidden_states_cloned), dim=0
+                )
+
+                controlnet_image_cloned = controlnet_image.clone()
+                controlnet_image = torch.cat(
+                    (controlnet_image, controlnet_image_cloned), dim=0
+                )
+
+                noise_cloned = noise.clone()
+                noise = torch.cat((noise, noise_cloned), dim=0)
+
+                # Add noise to the latents according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+                noisy_latents = noise_scheduler.add_noise(
+                    latents, noise, timesteps
+                )
+
+                down_block_res_samples, mid_block_res_sample = controlnet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_image,
+                    return_dict=False,
+                )
+
+                # Predict the noise residual
+                model_pred = unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    down_block_additional_residuals=[
+                        sample.to(dtype=weight_dtype) for sample in down_block_res_samples
+                    ],
+                    mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                ).sample
+            
+                # Get the target for loss depending on the prediction type
+                if noise_scheduler.config.prediction_type == "epsilon":
+                    target = noise
+                elif noise_scheduler.config.prediction_type == "v_prediction":
+                    target = noise_scheduler.get_velocity(
+                        latents, noise, timesteps
                     )
-                    indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
-                    timesteps = noise_scheduler_copy.timesteps[indices].to(device=accelerator.device)
-                    
-                    sigmas = rectified_flow.get_sigmas(noise_scheduler_copy, timesteps, accelerator, n_dim=latents.ndim, dtype=weight_dtype)
-                    noisy_latents = sigmas * noise + (1.0 - sigmas) * latents
-                    
-                    down_block_res_samples, mid_block_res_sample = controlnet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        controlnet_cond=controlnet_image,
-                        return_dict=False,
+                else:
+                    raise ValueError(
+                        f"Unknown prediction type {noise_scheduler.config.prediction_type}"
                     )
+                pretrain_loss = F.mse_loss(
+                    model_pred.float(), target.float(), reduction="mean"
+                )
 
-                    # Predict the noise residual
-                    model_pred = unet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        down_block_additional_residuals=[
-                            sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                        ],
-                        mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                    ).sample
-
-                    # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
-                    # Preconditioning of the model outputs.
-                    model_pred = model_pred * (-sigmas) + noisy_latents
-
-                    # these weighting schemes use a uniform timestep sampling
-                    # and instead post-weight the loss
-                    weighting = rectified_flow.compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-
-                    # flow matching loss
-                    target = latents
-
-                    # Compute regular loss. TODO simplify this
-                    loss = torch.mean(
-                        (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                        1,
+                """
+                Rewarding
+                """
+                # Predict the single-step denoised latents
+                pred_original_sample = [
+                    noise_scheduler.step(
+                        noise, t, noisy_latent
+                    ).pred_original_sample.to(weight_dtype)
+                    for (noise, t, noisy_latent) in zip(
+                        model_pred, timesteps, noisy_latents
                     )
-                    pretrain_loss = loss.mean()
+                ]
+                pred_original_sample = torch.stack(pred_original_sample)
 
-                    pred_original_sample = [
-                        noise_scheduler.step(noise, t, noisy_latent).pred_original_sample.to(weight_dtype) \
-                            for (noise, t, noisy_latent) in zip(model_pred, timesteps, noisy_latents)
-                    ]
-                    pred_original_sample = torch.stack(pred_original_sample)
-                    
+                # Map the denoised latents into RGB images
+                pred_original_sample = (
+                    1 / vae.config.scaling_factor * pred_original_sample
+                )
 
-                    # Map the denoised latents into RGB images
-                    pred_original_sample = 1 / vae.config.scaling_factor * pred_original_sample
-                    image = vae.decode(pred_original_sample.to(weight_dtype)).sample
-                    image = (image / 2 + 0.5).clamp(0, 1)
+                image = vae.decode(pred_original_sample.to(weight_dtype)).sample
+                image = (image / 2 + 0.5).clamp(0, 1)
 
+                if False:
+                    save_dir = Path(args.output_dir, "log_images")
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    save_name_prefix = f"step_{global_step}"
+                    for i in range(image.shape[0]):
+                        torchvision.utils.save_image(image[i], save_dir / f"{save_name_prefix}_{i}.png")
+
+                if args.grad_scale == 0:
+                    reward_loss = 0 * pretrain_loss
+                    loss = pretrain_loss
+                else:
                     # image normalization, depends on different reward models
                     # This step is necessary. It took us a long time to find out this issue
-                    # import IPython; IPython.embed()
                     if args.task_name == 'depth':
                         image = torchvision.transforms.functional.resize(image, (384, 384))
                         image = normalize(image, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                    elif args.task_name in ['canny', 'lineart', 'hed']:
+                    elif args.task_name in ['lineart', 'hed']:
                         pass
                     else:
                         image = normalize(image, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
                     # reward model inference
-                    if args.task_name == 'canny':
-                        outputs = reward_model(image.to(accelerator.device), low_threshold, high_threshold)
-                    else:
-                        outputs = reward_model(image.to(accelerator.device))
+                    outputs = reward_model(image.to(accelerator.device))
 
                     # normalize the predicted depth to (0, 1]
                     if type(outputs) == transformers.modeling_outputs.DepthEstimatorOutput:
@@ -1572,7 +1516,7 @@ def main(args):
                         # map predicted depth into [0, 1]
                         outputs = outputs.predicted_depth
                         outputs = torchvision.transforms.functional.resize(outputs, (args.resolution, args.resolution), interpolation=transforms.InterpolationMode.BILINEAR)
-                        max_values = outputs.view(args.train_batch_size, -1).amax(dim=1, keepdim=True).view(args.train_batch_size, 1, 1)
+                        max_values = outputs.view(args.train_batch_size * 2, -1).amax(dim=1, keepdim=True).view(args.train_batch_size * 2, 1, 1)
                         outputs = outputs / max_values
 
                         # map label into [0, 1]
@@ -1580,9 +1524,6 @@ def main(args):
                         max_values = labels.view(labels.size(0), -1).max(dim=1)[0]
                         labels = labels / max_values.view(-1, 1, 1)
 
-                    # kornia.filters.canny return a tuple with (magnitude, edge)
-                    elif args.task_name == 'canny':
-                        outputs = outputs[0]   # (B, 1, H, W)
                     elif args.task_name in ['lineart', 'hed']:
                         pass
                     else:
@@ -1603,7 +1544,7 @@ def main(args):
                     # For depth and segmentation, we resize the label to the size of model output
                     if args.task_name == 'segmentation':
                         labels = label_transform(labels, args.task_name, args.dataset_name, output_size=outputs.shape[-2:])
-                    elif args.task_name in ['depth', 'canny', 'lineart', 'hed']:
+                    elif args.task_name in ['depth', 'lineart', 'hed']:
                         labels = label_transform(labels, args.task_name, args.dataset_name)
                     else:
                         raise NotImplementedError(f"Not support task: {args.task_name}.")
@@ -1612,347 +1553,36 @@ def main(args):
 
                     # Determine which samples in the current batch need to calculate reward loss
                     timestep_mask = (args.min_timestep_rewarding <= timesteps.reshape(-1, 1)) & (timesteps.reshape(-1, 1) <= args.max_timestep_rewarding)
+                    timestep_mask = timestep_mask[: args.train_batch_size]
                     
-                    # calculate the reward loss
-                    reward_loss = get_reward_loss(output_primary, labels, args.task_name, reduction='none')  # B, H, W
+                    output_primary = outputs[: args.train_batch_size]
+                    output_auxiliary = outputs[args.train_batch_size :]
+
+                    variance = torch.abs(output_primary[:,0,:,:] - output_auxiliary[:,0,:,:])
+                    exp_variance = torch.exp(-variance)
                     
-                    # Reawrd Loss: (B, H, W)  =>  (B)
-                    if args.task_name == 'segmentation':
+                    reward_wo_loss = get_reward_loss(output_primary, labels, args.task_name, reduction="none")  # B,W,H
+                    reward_loss = reward_wo_loss * exp_variance
+                    
+                    if args.task_name == "segmentation":
                         # remove background class for the segmentation task
                         background_mask = (labels != 255).float()
-                        reward_loss = (background_mask * reward_loss).sum(dim=(-1,-2)) / (background_mask.sum(dim=(-1,-2)) + 1e-10)
-                    elif args.task_name == 'canny':
-                        pass
+                        reward_loss = (background_mask * reward_loss).sum(
+                            dim=(-1, -2)
+                        ) / (background_mask.sum(dim=(-1, -2)) + 1e-10)
                     else:
-                        reward_loss = reward_loss.mean(dim=(-1,-2))
-
+                        reward_loss = reward_loss.mean(dim=(-1, -2))
+                    
                     reward_loss = reward_loss.reshape_as(timestep_mask)
-                    reward_loss = (timestep_mask * reward_loss).sum() / (timestep_mask.sum() + 1e-10)
+                    reward_loss = (timestep_mask * reward_loss).sum() / (
+                        timestep_mask.sum() + 1e-10
+                    )
+                    variance = variance.mean(dim=(-1, -2)).reshape_as(timestep_mask)
+                    variance = (timestep_mask * variance).sum() / (
+                        timestep_mask.sum() + 1e-10
+                    )
+                   loss = pretrain_loss + reward_loss * args.grad_scale + torch.mean(variance) * args.u_scale
                     
-                    loss = pretrain_loss + reward_loss * args.grad_scale
-                    
-                else:
-                    if args.uncertainty:
-                        
-                        bsz = latents.shape[0]
-                        # Sample a random timestep for each image
-                        timesteps = torch.randint(args.timestep_sampling_start, args.timestep_sampling_end, (bsz,), device=latents.device)
-                        timesteps = timesteps.long()
-                        noise = torch.randn_like(latents)
-                        
-                        # Uncertainty data prepare
-                        timesteps_add = timesteps + args.add_timestep
-                        timesteps = torch.cat((timesteps, timesteps_add), dim=0)
-                        timesteps[timesteps > 999] = 999
-                        
-                        latents_cloned = latents.clone()
-                        latents = torch.cat((latents, latents_cloned), dim=0)
-                        
-                        encoder_hidden_states_cloned = encoder_hidden_states.clone()
-                        encoder_hidden_states = torch.cat((encoder_hidden_states, encoder_hidden_states_cloned), dim=0)
-                        
-                        controlnet_image_cloned = controlnet_image.clone()
-                        controlnet_image = torch.cat((controlnet_image, controlnet_image_cloned), dim=0)
-                        
-                        noise_cloned = noise.clone()
-                        noise = torch.cat((noise, noise_cloned), dim=0)
-
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-                        down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents,
-                            timesteps,
-                            encoder_hidden_states=encoder_hidden_states,
-                            controlnet_cond=controlnet_image,
-                            return_dict=False,
-                        )
-
-                        # Predict the noise residual
-                        model_pred = unet(
-                            noisy_latents,
-                            timesteps,
-                            encoder_hidden_states=encoder_hidden_states,
-                            down_block_additional_residuals=[
-                                sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                            ],
-                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                        ).sample
-                        # Get the target for loss depending on the prediction type
-                        if noise_scheduler.config.prediction_type == "epsilon":
-                            target = noise
-                        elif noise_scheduler.config.prediction_type == "v_prediction":
-                            target = noise_scheduler.get_velocity(latents, noise, timesteps)
-                        else:
-                            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                        pretrain_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-
-                        """
-                        Rewarding ControlNet
-                        """
-                        # Predict the single-step denoised latents
-                        pred_original_sample = [
-                            noise_scheduler.step(noise, t, noisy_latent).pred_original_sample.to(weight_dtype) \
-                                for (noise, t, noisy_latent) in zip(model_pred, timesteps, noisy_latents)
-                        ]
-                        pred_original_sample = torch.stack(pred_original_sample)
-                        
-
-
-                        # Map the denoised latents into RGB images
-                        pred_original_sample = 1 / vae.config.scaling_factor * pred_original_sample
-                        image = vae.decode(pred_original_sample.to(weight_dtype)).sample
-                        image = (image / 2 + 0.5).clamp(0, 1)
-
-                        # image normalization, depends on different reward models
-                        # This step is necessary. It took us a long time to find out this issue
-                        # import IPython; IPython.embed()
-                        if args.task_name == 'depth':
-                            image = torchvision.transforms.functional.resize(image, (384, 384))
-                            image = normalize(image, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                        elif args.task_name in ['canny', 'lineart', 'hed']:
-                            pass
-                        else:
-                            image = normalize(image, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-
-                        img_primary = image[:args.train_batch_size]
-                        img_auxiliary = image[args.train_batch_size:]
-                        variance = torch.sum(kl_distance(uncertainty_log_sm(img_primary),uncertainty_sm(img_auxiliary)), dim=1) * args.uncertainty_scale # TODO check mean(variance) -> 0
-                        exp_variance = torch.exp(-variance) #B,W,H  TODO check mean(variance) -> 1
-
-
-                        # reward model inference
-                        if args.task_name == 'canny':
-                            outputs = reward_model(image.to(accelerator.device), low_threshold, high_threshold)
-                        else:
-                            outputs = reward_model(image.to(accelerator.device))
-
-                        # normalize the predicted depth to (0, 1]
-                        if type(outputs) == transformers.modeling_outputs.DepthEstimatorOutput:
-
-                            # map predicted depth into [0, 1]
-                            outputs = outputs.predicted_depth
-                            outputs = torchvision.transforms.functional.resize(outputs, (args.resolution, args.resolution), interpolation=transforms.InterpolationMode.BILINEAR)
-                            max_values = outputs.view(args.train_batch_size, -1).amax(dim=1, keepdim=True).view(args.train_batch_size, 1, 1)
-                            outputs = outputs / max_values
-
-                            # map label into [0, 1]
-                            labels = batch["labels"].mean(dim=1)  # (N, 3, H, W) -> (N, H, W)
-                            max_values = labels.view(labels.size(0), -1).max(dim=1)[0]
-                            labels = labels / max_values.view(-1, 1, 1)
-
-                        # kornia.filters.canny return a tuple with (magnitude, edge)
-                        elif args.task_name == 'canny':
-                            outputs = outputs[0]   # (B, 1, H, W)
-                        elif args.task_name in ['lineart', 'hed']:
-                            pass
-                        else:
-                            labels = batch["labels"]
-
-                        # Avoid nan loss when using FP16 (happen in softmax)
-                        # FP32 and BF16 both work well
-                        if image.dtype == torch.float16:
-                            if isinstance(outputs, torch.Tensor):
-                                outputs = outputs.to(torch.float32)
-                                labels = labels.to(torch.float32)
-                            elif isinstance(outputs, list):
-                                outputs = [x.to(torch.float32) for x in outputs]
-                                labels = [x.to(torch.float32) for x in labels]
-                            else:
-                                raise NotImplementedError
-
-                        # For depth and segmentation, we resize the label to the size of model output
-                        if args.task_name == 'segmentation':
-                            labels = label_transform(labels, args.task_name, args.dataset_name, output_size=outputs.shape[-2:])
-                        elif args.task_name in ['depth', 'canny', 'lineart', 'hed']:
-                            labels = label_transform(labels, args.task_name, args.dataset_name)
-                        else:
-                            raise NotImplementedError(f"Not support task: {args.task_name}.")
-
-                        labels = [x.to(accelerator.device) for x in labels] if isinstance(labels, list) else labels.to(accelerator.device)
-
-                        # Determine which samples in the current batch need to calculate reward loss
-                        timestep_mask = (args.min_timestep_rewarding <= timesteps.reshape(-1, 1)) & (timesteps.reshape(-1, 1) <= args.max_timestep_rewarding)
-                        # Split k and k+1
-                        timestep_mask = timestep_mask[:args.train_batch_size]
-
-
-
-                        # Uncertainty loss
-                        output_primary = outputs[:args.train_batch_size]
-                        output_auxiliary = outputs[args.train_batch_size:]
-                        # variance = torch.sum(kl_distance(uncertainty_log_sm(output_primary),uncertainty_sm(output_auxiliary)), dim=1) * args.uncertainty_scale # TODO check mean(variance) -> 0
-                        # exp_variance = torch.exp(-variance) #B,W,H  TODO check mean(variance) -> 1
-                        # loss = torch.mean(loss*exp_variance) + torch.mean(variance)
-                        
-                        # calculate the reward loss
-                        reward_wo_loss = get_reward_loss(output_primary, labels, args.task_name, reduction='none') #B,W,H
-                        
-                        reward_loss = reward_wo_loss
-
-                        # Reawrd Loss: (B, H, W)  =>  (B)
-                        if args.task_name == 'segmentation':
-                            # remove background class for the segmentation task
-                            background_mask = (labels != 255).float()
-                            reward_loss = (background_mask * reward_loss).sum(dim=(-1,-2)) / (background_mask.sum(dim=(-1,-2)) + 1e-10)
-                            reward_wo_loss = (background_mask * reward_wo_loss).sum(dim=(-1,-2)) / (background_mask.sum(dim=(-1,-2)) + 1e-10)
-                        elif args.task_name == 'canny':
-                            pass
-                        else:
-                            reward_loss = reward_loss.mean(dim=(-1,-2))
-                            reward_wo_loss = reward_wo_loss.mean(dim=(-1,-2))
-                        # add uncertainty weight
-                        reward_loss = reward_loss.reshape_as(timestep_mask)
-                        
-                        reward_loss = (timestep_mask * reward_loss * exp_variance.mean(dim=(-1,-2)).reshape_as(timestep_mask)).sum() / (timestep_mask.sum() + 1e-10)
-                        
-                        reward_wo_loss = reward_wo_loss.reshape_as(timestep_mask)
-                        reward_wo_loss = (timestep_mask * reward_wo_loss).sum() / (timestep_mask.sum() + 1e-10)
-                        variance = variance.mean(dim=(-1,-2)).reshape_as(timestep_mask)
-                        variance = (timestep_mask * variance).sum() / (timestep_mask.sum() + 1e-10)
-                        
-                        loss = pretrain_loss + reward_loss * args.grad_scale + torch.mean(variance)
-                    else:
-                        # Sample noise that we'll add to the latents
-                        noise = torch.randn_like(latents)
-                        bsz = latents.shape[0]
-                        # Sample a random timestep for each image
-                        timesteps = torch.randint(args.timestep_sampling_start, args.timestep_sampling_end, (bsz,), device=latents.device)
-                        timesteps = timesteps.long()
-                        
-                        
-
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-                        down_block_res_samples, mid_block_res_sample = controlnet(
-                            noisy_latents,
-                            timesteps,
-                            encoder_hidden_states=encoder_hidden_states,
-                            controlnet_cond=controlnet_image,
-                            return_dict=False,
-                        )
-
-                        # Predict the noise residual
-                        model_pred = unet(
-                            noisy_latents,
-                            timesteps,
-                            encoder_hidden_states=encoder_hidden_states,
-                            down_block_additional_residuals=[
-                                sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                            ],
-                            mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                        ).sample
-
-                        # Get the target for loss depending on the prediction type
-                        if noise_scheduler.config.prediction_type == "epsilon":
-                            target = noise
-                        elif noise_scheduler.config.prediction_type == "v_prediction":
-                            target = noise_scheduler.get_velocity(latents, noise, timesteps)
-                        else:
-                            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-                        pretrain_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-
-                        """
-                        Rewarding ControlNet
-                        """
-                        # Predict the single-step denoised latents
-                        pred_original_sample = [
-                            noise_scheduler.step(noise, t, noisy_latent).pred_original_sample.to(weight_dtype) \
-                                for (noise, t, noisy_latent) in zip(model_pred, timesteps, noisy_latents)
-                        ]
-                        pred_original_sample = torch.stack(pred_original_sample)
-
-                        # Map the denoised latents into RGB images
-                        pred_original_sample = 1 / vae.config.scaling_factor * pred_original_sample
-                        image = vae.decode(pred_original_sample.to(weight_dtype)).sample
-                        image = (image / 2 + 0.5).clamp(0, 1)
-
-                        # image normalization, depends on different reward models
-                        # This step is necessary. It took us a long time to find out this issue
-                        # import IPython; IPython.embed()
-                        if args.task_name == 'depth':
-                            image = torchvision.transforms.functional.resize(image, (384, 384))
-                            image = normalize(image, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                        elif args.task_name in ['canny', 'lineart', 'hed']:
-                            pass
-                        else:
-                            image = normalize(image, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-
-                        # reward model inference
-                        if args.task_name == 'canny':
-                            outputs = reward_model(image.to(accelerator.device), low_threshold, high_threshold)
-                        else:
-                            outputs = reward_model(image.to(accelerator.device))
-
-                        # normalize the predicted depth to (0, 1]
-                        if type(outputs) == transformers.modeling_outputs.DepthEstimatorOutput:
-
-                            # map predicted depth into [0, 1]
-                            outputs = outputs.predicted_depth
-                            outputs = torchvision.transforms.functional.resize(outputs, (args.resolution, args.resolution), interpolation=transforms.InterpolationMode.BILINEAR)
-                            max_values = outputs.view(args.train_batch_size, -1).amax(dim=1, keepdim=True).view(args.train_batch_size, 1, 1)
-                            outputs = outputs / max_values
-
-                            # map label into [0, 1]
-                            labels = batch["labels"].mean(dim=1)  # (N, 3, H, W) -> (N, H, W)
-                            max_values = labels.view(labels.size(0), -1).max(dim=1)[0]
-                            labels = labels / max_values.view(-1, 1, 1)
-
-                        # kornia.filters.canny return a tuple with (magnitude, edge)
-                        elif args.task_name == 'canny':
-                            outputs = outputs[0]   # (B, 1, H, W)
-                        elif args.task_name in ['lineart', 'hed']:
-                            pass
-                        else:
-                            labels = batch["labels"]
-
-                        # Avoid nan loss when using FP16 (happen in softmax)
-                        # FP32 and BF16 both work well
-                        if image.dtype == torch.float16:
-                            if isinstance(outputs, torch.Tensor):
-                                outputs = outputs.to(torch.float32)
-                                labels = labels.to(torch.float32)
-                            elif isinstance(outputs, list):
-                                outputs = [x.to(torch.float32) for x in outputs]
-                                labels = [x.to(torch.float32) for x in labels]
-                            else:
-                                raise NotImplementedError
-
-                        # For depth and segmentation, we resize the label to the size of model output
-                        if args.task_name == 'segmentation':
-                            labels = label_transform(labels, args.task_name, args.dataset_name, output_size=outputs.shape[-2:])
-                        elif args.task_name in ['depth', 'canny', 'lineart', 'hed']:
-                            labels = label_transform(labels, args.task_name, args.dataset_name)
-                        else:
-                            raise NotImplementedError(f"Not support task: {args.task_name}.")
-
-                        labels = [x.to(accelerator.device) for x in labels] if isinstance(labels, list) else labels.to(accelerator.device)
-
-                        # Determine which samples in the current batch need to calculate reward loss
-                        timestep_mask = (args.min_timestep_rewarding <= timesteps.reshape(-1, 1)) & (timesteps.reshape(-1, 1) <= args.max_timestep_rewarding)
-
-                        # calculate the reward loss
-                        reward_loss = get_reward_loss(outputs, labels, args.task_name, reduction='none')
-
-                        # Reawrd Loss: (B, H, W)  =>  (B)
-                        if args.task_name == 'segmentation':
-                            # remove background class for the segmentation task
-                            background_mask = (labels != 255).float()
-                            reward_loss = (background_mask * reward_loss).sum(dim=(-1,-2)) / (background_mask.sum(dim=(-1,-2)) + 1e-10)
-                        elif args.task_name == 'canny':
-                            pass
-                        else:
-                            reward_loss = reward_loss.mean(dim=(-1,-2))
-
-                        reward_loss = reward_loss.reshape_as(timestep_mask)
-                        reward_loss = (timestep_mask * reward_loss).sum() / (timestep_mask.sum() + 1e-10)
-                        loss = pretrain_loss + reward_loss * args.grad_scale
-
                 """
                 Losses
                 """
@@ -1960,19 +1590,10 @@ def main(args):
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 avg_pretrain_loss = accelerator.gather(pretrain_loss.repeat(args.train_batch_size)).mean()
                 avg_reward_loss = accelerator.gather(reward_loss.repeat(args.train_batch_size)).mean()
-                avg_reward_wo_loss = accelerator.gather(reward_wo_loss.repeat(args.train_batch_size)).mean()
-                # pdb.set_trace()
-                avg_variance = accelerator.gather(variance.repeat(args.train_batch_size)).mean()
-                # avg_exp_variance = accelerator.gather(exp_variance.repeat(args.train_batch_size)).mean()
-
 
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
                 train_pretrain_loss += avg_pretrain_loss.item() / args.gradient_accumulation_steps
                 train_reward_loss += avg_reward_loss.item() / args.gradient_accumulation_steps
-                train_reward_wo_loss += avg_reward_wo_loss.item() / args.gradient_accumulation_steps
-
-                train_variance += avg_variance.item() / args.gradient_accumulation_steps
-                # train_exp_variance += avg_exp_variance.item() / args.gradient_accumulation_steps
 
                 # Back propagate
                 accelerator.backward(loss)
@@ -1990,31 +1611,24 @@ def main(args):
                 global_step += 1
 
                 # loss when perform gradient backward
-                accelerator.log({
+                accelerator.log(
+                    {
                         "train_loss": train_loss,
                         "train_pretrain_loss": train_pretrain_loss,
                         "train_reward_loss": train_reward_loss,
-                        "train_reward_wo_loss": train_reward_wo_loss,
-                        "variance": train_variance,
-                        # "exp_variance": train_exp_variance,
-                        "lr": lr_scheduler.get_last_lr()[0]
+                        "lr": lr_scheduler.get_last_lr()[0],
                     },
-                    step=global_step
+                    step=global_step,
                 )
                 loss_per_epoch += train_loss
                 pretrain_loss_per_epoch += train_pretrain_loss
                 reward_loss_per_epoch += train_reward_loss
-                reward_wo_loss_per_epoch += train_reward_wo_loss
-                
-                variance_per_epoch += train_variance
-                # exp_variance_per_epoch += train_exp_variance
 
-
-                train_loss, train_pretrain_loss, train_reward_loss, train_reward_wo_loss = 0., 0., 0., 0.
+                train_loss, train_pretrain_loss, train_reward_loss = 0., 0., 0.
                 train_variance, train_exp_variance = 0., 0.
-                
+
                 if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
+                    if global_step % args.checkpointing_steps == 1:
                         # directly save the state_dict
                         if accelerator.distributed_type != accelerate.DistributedType.FSDP:
                             save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
@@ -2026,7 +1640,7 @@ def main(args):
                             logger.info(f"Saved state to {save_path}")
 
                     start_time = time.time()
-                    if global_step % args.validation_steps == 1:  # TODO: [c7w] finish logic for validation
+                    if global_step % args.validation_steps == 1:
                         image_logs = log_validation(
                             vae,
                             text_encoder,
@@ -2043,21 +1657,19 @@ def main(args):
 
                         end_time = time.time()
                         logger.info(f"Validation time: {end_time - start_time} seconds")
+                        
             # only show in the progress bar
             logs = {
                 "loss_step": loss.detach().item(),
                 "pretrain_loss_step": pretrain_loss.detach().item(),
                 "reward_loss_step": reward_loss.detach().item(),
-                "reward_wo_loss_step": reward_wo_loss.detach().item(),
-                "variance_step": variance.detach().item(),
-                # "exp_variance_step": exp_variance.detach().item(),
-                "lr": lr_scheduler.get_last_lr()[0]
+                "lr": lr_scheduler.get_last_lr()[0],
             }
             progress_bar.set_postfix(**logs)
             # accelerator.log(logs, step=global_step)
 
             # FSDP save model need to call all the ranks
-            if global_step % args.checkpointing_steps == 0:
+            if global_step % args.checkpointing_steps == 1:
                 if accelerator.distributed_type == accelerate.DistributedType.FSDP:
                     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
@@ -2075,18 +1687,8 @@ def main(args):
 
             if global_step >= args.max_train_steps:
                 break
-
-        logs = {
-            "loss_epoch": loss_per_epoch / len(train_dataloader),
-            "pretrain_loss_epoch": pretrain_loss_per_epoch / len(train_dataloader),
-            "reward_loss_epoch": reward_loss_per_epoch / len(train_dataloader),
-            "reward_wo_loss_epoch": reward_wo_loss_per_epoch / len(train_dataloader),
-            "variance_epoch": variance_per_epoch / len(train_dataloader),
-            # "exp_variance_loss_epoch": exp_variance_per_epoch / len(train_dataloader)
-        }
-        
-        progress_bar.set_postfix(**logs)
-        accelerator.log(logs, step=global_step)
+        if global_step >= args.max_train_steps:
+            break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
@@ -2120,10 +1722,10 @@ def main(args):
                     upload_folder(
                         repo_id=repo_id,
                         folder_path=args.output_dir,
-                        path_in_repo=args.output_dir.replace('work_dirs/', ''),
+                        path_in_repo=args.output_dir.replace("work_dirs/", ""),
                         commit_message=f"End of training {args.output_dir.split('/')[-1]}",
                         ignore_patterns=["step_*", "epoch_*"],
-                        token=args.hub_token
+                        token=args.hub_token,
                     )
                     break
                 except:
