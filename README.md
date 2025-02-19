@@ -60,6 +60,16 @@ bash train/ctrlu_lineart.sh
 ```
 
 ### 🧐 Evaluation
+Please download the model weights and put them into each subset of `checkpoints`:
+|   model    |HF weights                                                                        |
+|:----------:|:------------------------------------------------------------------------------------|
+|  Segmentation_ade20k   | [model](https://huggingface.co/grenoble/Ctrl-u/tree/main/checkpoint/reward/ade20k) |
+|  Segmentation_cocostuff   | [model](https://huggingface.co/grenoble/Ctrl-u/tree/main/checkpoint/reward/cocostuff) |
+|  Depth   |  [model](https://huggingface.co/grenoble/Ctrl-u/tree/main/checkpoint/reward/depth) |
+|  Hed (SoftEdge)   | [model](https://huggingface.co/grenoble/Ctrl-u/tree/main/checkpoint/reward/hed) |
+|  LineArt   | [model](https://huggingface.co/grenoble/Ctrl-u/tree/main/checkpoint/reward/lineart) |
+
+Please make sure the folder directory is consistent with the test script, then you can eval each model by:
 ```bash
 bash eval/eval_ade20k.sh
 bash eval/eval_cocostuff.sh
